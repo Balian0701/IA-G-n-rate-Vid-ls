@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Générateur de vidéo IA</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--tx:#1d1d1b;--mu:#6b6b66;--ac:#5b3df5;--bd:#e2e0da}
+@media(prefers-color-scheme:dark){:root{--bg:#141413;--card:#1f1f1d;--tx:#f0efe9;--mu:#9a9992;--bd:#33332f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;padding:16px;padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(16px,env(safe-area-inset-bottom))}
+main{max-width:640px;margin:auto}
+h1{font-size:1.4rem;margin:0 0 4px}.s{color:var(--mu);margin:0 0 16px;font-size:.95rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:14px}
+label{font-weight:600;display:block;margin:0 0 6px;font-size:.95rem}
+textarea,input[type=password],input[type=text],select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--bd);background:transparent;color:inherit;font:inherit}
+textarea{min-height:110px;resize:vertical}
+.row{display:flex;gap:10px;margin-top:12px}.row>div{flex:1}
+.drop{margin-top:14px;border:2px dashed var(--bd);border-radius:10px;padding:14px;text-align:center;color:var(--mu)}
+.thumbs{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.thumbs div{position:relative}.thumbs img{width:84px;height:84px;object-fit:cover;border-radius:8px;display:block}
+.thumbs button{position:absolute;top:-8px;right:-8px;border:0;border-radius:50%;width:26px;height:26px;background:#000;color:#fff;font-size:16px}
+.go{margin-top:16px;width:100%;padding:15px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-size:1rem;font-weight:600}
+.go:disabled{opacity:.5}
+#st{margin-top:14px;color:var(--mu);word-break:break-word}
+video{width:100%;margin-top:14px;border-radius:10px;background:#000}
+a.dl{display:inline-block;margin-top:10px;color:var(--ac);font-weight:600}
+details summary{font-weight:600;cursor:pointer}
+small{color:var(--mu)}
+</style>
+</head>
+<body>
+<main>
+<h1>Générateur de vidéo IA</h1>
+<p class="s">Décris ta vidéo. Ajoute des images si tu veux guider le rendu.</p>
+
+<div class="card">
+  <details id="cfg">
+    <summary>Réglages (clé API)</summary>
+    <div style="margin-top:12px">
+      <label for="key">Clé API fal.ai</label>
+      <input type="password" id="key" placeholder="xxxxxxxx-xxxx:xxxxxxxx" autocomplete="off">
+      <small>Stockée uniquement sur ce téléphone (navigateur). Crée-la sur fal.ai/dashboard/keys.</small>
+      <div style="margin-top:12px">
+        <label for="m0">Modèle sans image</label>
+        <input type="text" id="m0">
+        <label for="m1" style="margin-top:10px">Modèle avec 1 image</label>
+        <input type="text" id="m1">
+        <label for="m2" style="margin-top:10px">Modèle avec plusieurs images</label>
+        <input type="text" id="m2">
+      </div>
+    </div>
+  </details>
+</div>
+
+<div class="card">
+  <label for="p">Description de la vidéo</label>
+  <textarea id="p" placeholder="Un renard roux court dans une forêt enneigée au lever du soleil, caméra en travelling…"></textarea>
+
+  <div class="row">
+    <div><label for="dur">Durée</label>
+      <select id="dur"><option>5</option><option>10</option></select></div>
+    <div><label for="ar">Format</label>
+      <select id="ar"><option value="9:16">Vertical 9:16</option><option value="16:9">Horizontal 16:9</option><option value="1:1">Carré 1:1</option></select></div>
+  </div>
+
+  <div class="drop" id="drop">+ Ajouter des images (facultatif)<br><small>1 image = point de départ · 2 à 4 = références</small></div>
+  <input type="file" id="f" accept="image/*" multiple hidden>
+  <div class="thumbs" id="th"></div>
+
+  <button class="go" id="go">Générer la vidéo</button>
+  <div id="st"></div>
+  <div id="out"></div>
+</div>
+</main>
+
+<script>
+const $ = i => document.getElementById(i);
+const DEFAULTS = {
+  m0: "fal-ai/wan/v2.7/text-to-video",
+  m1: "fal-ai/wan/v2.7/image-to-video",
+  m2: "fal-ai/wan/v2.7/reference-to-video"
+};
+let images = []; // data URIs
+
+function store(k, v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k, v);}catch(e){ return null; } }
+
+// Chargement des réglages
+$('key').value = store('fal_key') || '';
+for (const k of ['m0','m1','m2']) $(k).value = store(k) || DEFAULTS[k];
+if (!$('key').value) $('cfg').open = true;
+$('key').onchange = () => store('fal_key', $('key').value.trim());
+for (const k of ['m0','m1','m2']) $(k).onchange = () => store(k, $(k).value.trim());
+
+// Images : redimensionnées côté téléphone pour alléger l'envoi
+$('drop').onclick = () => $('f').click();
+$('f').onchange = async e => {
+  for (const file of [...e.target.files]) {
+    if (images.length >= 4) break;
+    images.push(await shrink(file));
+  }
+  e.target.value = ''; draw();
+};
+function shrink(file){
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 1280, r = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      res(c.toDataURL('image/jpeg', 0.88));
+      URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+function draw(){
+  const t = $('th'); t.innerHTML = '';
+  images.forEach((src, i) => {
+    const d = document.createElement('div'), im = document.createElement('img'), b = document.createElement('button');
+    im.src = src; b.textContent = '×'; b.onclick = () => { images.splice(i,1); draw(); };
+    d.append(im, b); t.append(d);
+  });
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+$('go').onclick = async () => {
+  const key = $('key').value.trim(), prompt = $('p').value.trim();
+  if (!key){ $('cfg').open = true; $('st').textContent = 'Ajoute d’abord ta clé API dans les réglages.'; return; }
+  if (!prompt){ $('st').textContent = 'Écris d’abord une description.'; return; }
+  store('fal_key', key);
+
+  const n = images.length;
+  const model = n === 0 ? $('m0').value.trim() : n === 1 ? $('m1').value.trim() : $('m2').value.trim();
+  const body = { prompt, duration: parseInt($('dur').value), aspect_ratio: $('ar').value, resolution: '720p' };
+  if (n === 1) body.image_url = images[0];
+  if (n > 1) body.reference_image_urls = images;
+
+  const H = { 'Authorization': 'Key ' + key, 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  $('go').disabled = true; $('out').innerHTML = '';
+  $('st').textContent = 'Envoi de la demande…';
+
+  try {
+    const r = await fetch('https://queue.fal.run/' + model, { method: 'POST', headers: H, body: JSON.stringify(body) });
+    const sub = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(sub.detail ? JSON.stringify(sub.detail) : 'Erreur ' + r.status);
+
+    const t0 = Date.now();
+    while (true) {
+      await sleep(3000);
+      const s = await (await fetch(sub.status_url, { headers: H })).json();
+      const sec = Math.round((Date.now() - t0) / 1000);
+      const pos = s.queue_position != null ? ' · file d’attente : ' + s.queue_position : '';
+      $('st').textContent = 'Génération en cours (' + sec + ' s)' + pos + '…';
+      if (s.status === 'COMPLETED') break;
+      if (s.status === 'FAILED' || s.error) throw new Error(s.error || 'Échec de la génération');
+    }
+    const res = await (await fetch(sub.response_url, { headers: H })).json();
+    const url = res.video && res.video.url;
+    if (!url) throw new Error('Aucune vidéo reçue : ' + JSON.stringify(res).slice(0, 300));
+    $('st').textContent = 'Terminé !';
+    $('out').innerHTML = '<video controls playsinline autoplay loop src="' + url + '"></video><a class="dl" href="' + url + '" target="_blank" rel="noopener">Ouvrir / télécharger la vidéo</a>';
+  } catch (e) {
+    const m = String(e.message || e);
+    $('st').textContent = 'Erreur : ' + (m.includes('Failed to fetch') ? 'connexion refusée par le navigateur (CORS) ou réseau coupé.' : m);
+  }
+  $('go').disabled = false;
+};
+</script>
+</body>
+</html>
